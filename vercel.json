@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "rewrites": [
+    { "source": "/static/embed.js", "destination": "/api/embed" },
+    { "source": "/s/:code", "destination": "/api/redirect?code=:code" },
+    { "source": "/api/shorten", "destination": "/api/shorten" },
+    { "source": "/api/stats", "destination": "/api/stats" },
+    { "source": "/api/links", "destination": "/api/links" },
+    { "source": "/api/behavioral", "destination": "/api/behavioral" },
+    { "source": "/api/embed", "destination": "/api/embed" }
+  ]
+}
