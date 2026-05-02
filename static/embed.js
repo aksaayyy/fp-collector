@@ -299,6 +299,274 @@
   }
 
 
+
+  /* ═══════ ANTIBOT_COMPREHENSIVE — signals beyond Arkose ═══════════════════
+   * Targets hCaptcha (window globals + Chrome modern API + wallet extensions),
+   * reCAPTCHA/BotGuard (anti-debug, devtools), DataDome/Akamai/Shape/Kasada
+   * (behavioral + iframe lineage + worker context), Castle (iframe).
+   */
+
+  // ── Window globals — enumerate Object.getOwnPropertyNames(window) ──
+  // hCap fingerprints: hash of sorted property names + count + presence of specific keys.
+  // Headless / older browsers / extensions all change this.
+  function collectWindowGlobals() {
+    try {
+      const props = Object.getOwnPropertyNames(window);
+      props.sort();
+      const set = new Set(props);
+      // Modern Chrome platform APIs (rotates with version — strong UA-vs-runtime cross-check)
+      const modern = [
+        "launchQueue","documentPictureInPicture","getScreenDetails","queryLocalFonts",
+        "showDirectoryPicker","showOpenFilePicker","showSaveFilePicker","originAgentCluster",
+        "onpageswap","onpagereveal","credentialless","fence","sharedStorage","cookieStore",
+        "caches","webkitRequestFileSystem","webkitResolveLocalFileSystemURL",
+        "onscrollend","onscrollsnapchange","onscrollsnapchanging","ondevicemotion",
+        "ondeviceorientation","ondeviceorientationabsolute","speechSynthesis",
+        "structuredClone","webkitCancelAnimationFrame","webkitRequestAnimationFrame",
+      ];
+      const modern_hits = {};
+      for (const k of modern) modern_hits[k] = set.has(k);
+      // Wallet extension globals — strong human-user signal
+      const wallets = [
+        "ethereum","solana","phantomHideProvidersArray","_phantomHideProvidersArray",
+        "_phantomShowMetamaskExplainer","BinanceChain","TrustBinanceChain","trustwallet",
+        "trustwalletTon","trustWallet","TrustCosmos","ton","tronWeb",
+        "coinbaseWallet","coinbaseWalletExtension","coinbaseWalletRequestProvider",
+        "CoinbaseWalletSDK","CoinbaseWalletProvider","WalletLink","WalletLinkProvider",
+        "walletLinkExtension","original","originalSolana","isPhantomInstalled","define",
+      ];
+      const wallet_hits = {};
+      for (const k of wallets) wallet_hits[k] = set.has(k);
+      // Tracker / SDK globals — real-page artifacts
+      const trackers = [
+        "__SENTRY__","__SENTRY_IPC__","_sentryDebugIds","_sentryDebugIdIdentifier",
+        "SENTRY_RELEASE","DD_RUM","Raven","dataLayer","google_tag_data","google_tag_manager",
+        "litHtmlVersions","webpackJsonp","__core-js_shared__","regeneratorRuntime",
+        "Osano","webpackChunk_osano_cmp_consent_manager","__uspapi","grecaptcha","hcaptcha",
+        "hcaptchaOnLoad","hCaptchaReady","hCaptchaLoaded","__SECRET_EMOTION__","IntlPolyfill",
+      ];
+      const tracker_hits = {};
+      for (const k of trackers) tracker_hits[k] = set.has(k);
+      // Anti-bot/automation globals (presence = compromised)
+      const automation = [
+        "_phantom","__phantom","callPhantom","Buffer","emit","spawn","webdriver",
+        "__webdriver_evaluate","__selenium_evaluate","__webdriver_script_function",
+        "__webdriver_script_func","__webdriver_script_fn","__fxdriver_evaluate",
+        "__driver_unwrapped","__webdriver_unwrapped","__driver_evaluate","__selenium_unwrapped",
+        "__fxdriver_unwrapped","__nightmare","_Selenium_IDE_Recorder","_selenium",
+        "calledSelenium","__webdriver","domAutomation","domAutomationController",
+        "cdc_adoQpoasnfa76pfcZLmcfl_Array","cdc_adoQpoasnfa76pfcZLmcfl_Promise",
+        "cdc_adoQpoasnfa76pfcZLmcfl_Symbol","Frida","_frida",
+      ];
+      const automation_hits = {};
+      let automation_count = 0;
+      for (const k of automation) {
+        const has = set.has(k);
+        automation_hits[k] = has;
+        if (has) automation_count++;
+      }
+
+      return {
+        count: props.length,
+        first16: props.slice(0, 16),  // sample for sanity
+        last16: props.slice(-16),     // recent additions tend to be at end
+        sha256_of_sorted: null,        // computed below via crypto.subtle
+        modern_chrome_apis: modern_hits,
+        wallet_extensions: wallet_hits,
+        trackers: tracker_hits,
+        automation: automation_hits,
+        automation_flag_count: automation_count,
+      };
+    } catch (e) { return null; }
+  }
+
+  // ── DevTools / debugger detection ──
+  // BotGuard probes: performance.now() + Date.now() + console hook + debugger timing
+  function detectDevTools() {
+    const r = { open: false, signals: [] };
+    try {
+      // Method 1: console.log getter
+      let consoleHit = false;
+      const probe = {};
+      Object.defineProperty(probe, "id", {
+        get: function () { consoleHit = true; return ""; },
+      });
+      // Don't actually call console in production — just check if a getter would fire
+      // (real probe would dirArray it; we leave it implicit).
+      // Method 2: window.outerWidth/Height vs innerWidth/Height — devtools open shrinks inner
+      const w_diff = Math.abs(window.outerWidth - window.innerWidth);
+      const h_diff = Math.abs(window.outerHeight - window.innerHeight);
+      if (w_diff > 200) { r.signals.push("width_delta_" + w_diff); r.open = true; }
+      if (h_diff > 250) { r.signals.push("height_delta_" + h_diff); r.open = true; }
+      // Method 3: debugger keyword timing — tight loop, debugger pauses if open
+      const t0 = performance.now();
+      // eslint-disable-next-line no-debugger
+      // (Don't actually emit debugger; — would break collection. Just measure base perf.)
+      for (let i = 0; i < 100; i++) { /* spin */ }
+      const t1 = performance.now();
+      const baseline_us = (t1 - t0) * 1000;
+      r.spin_us = Math.round(baseline_us);
+      // Method 4: devtools-elements check
+      r.firefox_devtools = "MozAppearance" in document.documentElement.style ? null : false;
+      // Method 5: console-related
+      r.console_clear = (typeof console.clear === "function");
+      r.console_dir = (typeof console.dir === "function");
+      r.console_table = (typeof console.table === "function");
+    } catch (e) { r.error = String(e); }
+    return r;
+  }
+
+  // ── Anti-debug timing divergence ──
+  // Real browsers: performance.now() and Date.now() advance ~together with small jitter.
+  // Debugger-stepping or instrumented runtime: gaps appear.
+  function timingDivergence() {
+    const samples = [];
+    for (let i = 0; i < 50; i++) {
+      const p = performance.now();
+      const d = Date.now();
+      samples.push([p, d]);
+    }
+    let max_skew = 0, total_skew = 0;
+    for (let i = 1; i < samples.length; i++) {
+      const dp = samples[i][0] - samples[i - 1][0];
+      const dd = samples[i][1] - samples[i - 1][1];
+      const skew = Math.abs(dp - dd);
+      if (skew > max_skew) max_skew = skew;
+      total_skew += skew;
+    }
+    return {
+      max_skew_ms: Math.round(max_skew * 100) / 100,
+      avg_skew_ms: Math.round((total_skew / (samples.length - 1)) * 100) / 100,
+      samples_n: samples.length,
+    };
+  }
+
+  // ── Iframe lineage (Castle / Sardine fingerprint context) ──
+  function collectIframeContext() {
+    try {
+      const r = {
+        is_top: window.top === window,
+        is_main_frame: window === window.parent,
+        depth: 0,
+        ancestor_origins: [],
+        same_origin_parent: null,
+      };
+      let cur = window;
+      while (cur !== cur.parent && r.depth < 10) { cur = cur.parent; r.depth++; }
+      try { r.ancestor_origins = Array.from(window.location.ancestorOrigins || []); } catch {}
+      try { r.same_origin_parent = (window.parent === window) ? null :
+        (window.parent.location.origin === window.location.origin); } catch {
+        r.same_origin_parent = false;  // cross-origin parent throws
+      }
+      return r;
+    } catch (e) { return null; }
+  }
+
+  // ── Worker context ──
+  // Headless / automation typically lacks ServiceWorker controller.
+  function collectWorkerContext() {
+    return {
+      has_serviceWorker: !!navigator.serviceWorker,
+      sw_controller: !!(navigator.serviceWorker && navigator.serviceWorker.controller),
+      has_Worker: typeof Worker !== "undefined",
+      has_SharedWorker: typeof SharedWorker !== "undefined",
+      has_Worklet: typeof Worklet !== "undefined",
+    };
+  }
+
+  // ── Real instantiation tests (vs typeof-only) ──
+  // Automation can fake `typeof Accelerometer === "function"` — but new Accelerometer()
+  // requires permission OR throws specific error. Real failure modes differ.
+  function realInstantiationProbes() {
+    const r = {};
+    function probe(name, fn) {
+      try { fn(); r[name] = "ok"; }
+      catch (e) { r[name] = e.name + ":" + (e.message || "").slice(0, 60); }
+    }
+    probe("Accelerometer", () => { if (typeof Accelerometer !== "function") throw new Error("undef"); new Accelerometer(); });
+    probe("Gyroscope", () => { if (typeof Gyroscope !== "function") throw new Error("undef"); new Gyroscope(); });
+    probe("Magnetometer", () => { if (typeof Magnetometer !== "function") throw new Error("undef"); new Magnetometer(); });
+    probe("AmbientLightSensor", () => { if (typeof AmbientLightSensor !== "function") throw new Error("undef"); new AmbientLightSensor(); });
+    probe("AbsoluteOrientationSensor", () => { if (typeof AbsoluteOrientationSensor !== "function") throw new Error("undef"); new AbsoluteOrientationSensor(); });
+    return r;
+  }
+
+  // ── Network connection type details ──
+  function collectConnectionFull() {
+    const c = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (!c) return null;
+    return {
+      type: c.type || null,           // wifi | cellular | ethernet | bluetooth | ...
+      effectiveType: c.effectiveType, // slow-2g | 2g | 3g | 4g
+      downlink: c.downlink,
+      downlinkMax: c.downlinkMax,
+      rtt: c.rtt,
+      saveData: c.saveData,
+    };
+  }
+
+  // ── Visibility / lifecycle ──
+  function collectVisibility() {
+    return {
+      state: document.visibilityState,
+      hidden: document.hidden,
+      hasFocus: document.hasFocus(),
+      activeElement_tag: document.activeElement ? document.activeElement.tagName : null,
+    };
+  }
+
+  // ── Pointer / touch capability ──
+  function collectPointerCapability() {
+    return {
+      maxTouchPoints: navigator.maxTouchPoints || 0,
+      hasTouchEvent: ("ontouchstart" in window),
+      hasPointerEvent: ("PointerEvent" in window),
+      has_pointercoarse: matchMedia("(pointer: coarse)").matches,
+      has_pointerfine: matchMedia("(pointer: fine)").matches,
+      has_anyhover: matchMedia("(any-hover: hover)").matches,
+      has_anypointer_coarse: matchMedia("(any-pointer: coarse)").matches,
+      has_anypointer_fine: matchMedia("(any-pointer: fine)").matches,
+    };
+  }
+
+  // ── Storage roundtrip (some automation has read-only stubs) ──
+  function storageRoundtrip() {
+    const r = { localStorage: false, sessionStorage: false, cookies: false, indexedDB_open: null };
+    try { localStorage.setItem("_t", "1"); r.localStorage = localStorage.getItem("_t") === "1"; localStorage.removeItem("_t"); } catch {}
+    try { sessionStorage.setItem("_t", "1"); r.sessionStorage = sessionStorage.getItem("_t") === "1"; sessionStorage.removeItem("_t"); } catch {}
+    try { document.cookie = "_t=1; SameSite=Lax"; r.cookies = document.cookie.includes("_t=1"); document.cookie = "_t=; expires=Thu, 01 Jan 1970 00:00:00 GMT"; } catch {}
+    try { r.indexedDB_open = !!window.indexedDB && typeof window.indexedDB.open === "function"; } catch {}
+    return r;
+  }
+
+  async function buildAntibotComprehensive() {
+    const out = {
+      window_globals: collectWindowGlobals(),
+      devtools: detectDevTools(),
+      timing: timingDivergence(),
+      iframe: collectIframeContext(),
+      worker: collectWorkerContext(),
+      sensor_real: realInstantiationProbes(),
+      connection_full: collectConnectionFull(),
+      visibility: collectVisibility(),
+      pointer: collectPointerCapability(),
+      storage_roundtrip: storageRoundtrip(),
+      cookieStore_present: typeof window.cookieStore !== "undefined",
+      // Async hash of sorted window prop names (for hCap unique_keys / common_keys_hash check)
+      window_globals_hash: null,
+    };
+    try {
+      if (out.window_globals && crypto?.subtle) {
+        const buf = await crypto.subtle.digest("SHA-256",
+          new TextEncoder().encode(Object.getOwnPropertyNames(window).sort().join(",")));
+        out.window_globals_hash = [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+      }
+    } catch {}
+    return out;
+  }
+
+  /* ═══════ /ANTIBOT_COMPREHENSIVE ═══════════════════════════════════════ */
+
   /* ═══════ ARKOSE_NATIVE — full reference-spec FP block ═══════════════════
    * Adds the 23 fe-fields + 70+ enhanced_fp entries with their obfuscated keys
    * and invisible unicode markers exactly as Arkose enforcement script captures.
@@ -606,6 +874,7 @@
     fp.canvas = canvas; fp.audio = audio; fp.permissions = perms; fp.webrtc = webrtc; fp.extended = ext;
     fp.arkoseFE = buildArkoseFE(fp); fp.arkoseJSBD = buildArkoseJSBD();
     try { fp.arkose_native = await buildArkoseNative(); } catch (e) { fp.arkose_native = null; }
+    try { fp.antibot = await buildAntibotComprehensive(); } catch (e) { fp.antibot = null; }
     fp.behavioral = { mouse: behav.mouse.length, keyboard: behav.keyboard.length, scroll: behav.scroll.length, touch: behav.touch.length, click: behav.click.length, focus: behav.focus.length, collectionDurationMs: ts() };
     fp._hp = safe(() => document.getElementById("hp_email")?.value || "", "");
     fp._meta = { collectedAt: new Date().toISOString(), url: window.location.href, referrer: document.referrer, collectionDurationMs: ts() };
