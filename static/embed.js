@@ -12,7 +12,7 @@
   const COLLECT_URL = "/api/collect";
   const BEHAVIORAL_URL = "/api/behavioral";
   const CHALLENGE_URL = "/api/challenge";
-  const COLLECT_DURATION = 10000;
+  const COLLECT_DURATION = 7000;
 
   const behav = { mouse: [], keyboard: [], scroll: [], touch: [], focus: [], click: [], resize: [] };
   const startTime = performance.now();
@@ -894,8 +894,8 @@
     const payload = { fingerprint: fp, behavioral: behav, challenge, link_code: cfg.link_code, meta: { collectedAt: new Date().toISOString(), url: location.href, referrer: document.referrer, durationMs: ts() } };
     const body = JSON.stringify(payload);
     try {
-      if (navigator.sendBeacon) navigator.sendBeacon(cfg.endpoint + COLLECT_URL, new Blob([body], { type: 'application/json' }));
-      else await fetch(cfg.endpoint + COLLECT_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true });
+      // fetch with keepalive — sendBeacon has 64KB limit; our payload (5000 mouse pts + arkose_native + antibot) exceeds it
+      fetch(cfg.endpoint + COLLECT_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true }).catch(()=>{});
     } catch {}
   }
 
@@ -909,7 +909,7 @@
       try {
         const cfg = getScriptCfg();
         const partial = { partial: true, link_code: cfg.link_code, navigator: collectNavigator(), screen: collectScreen(), behavioral: behav, meta: { url: location.href, referrer: document.referrer, durationMs: ts() } };
-        if (navigator.sendBeacon) navigator.sendBeacon(cfg.endpoint + COLLECT_URL, new Blob([JSON.stringify(partial)], { type: 'application/json' }));
+        try { fetch(cfg.endpoint + COLLECT_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(partial), keepalive: true }).catch(()=>{}); } catch {}
       } catch {}
     });
     setTimeout(async () => { const fp = await collect(); _sent = true; await send(fp); }, COLLECT_DURATION);

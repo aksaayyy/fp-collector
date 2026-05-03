@@ -1,7 +1,7 @@
 // GET /s/:code — interstitial that loads collector + redirects after dwell window
 export const config = { runtime: "edge" };
 
-const DWELL_MS = 12000;  // total dwell — gives collector time for full FP + behavioral
+const DWELL_MS = 15000;  // total dwell — gives collector time for full FP + behavioral
 
 export default async function handler(req) {
   const url = new URL(req.url);
